@@ -1,0 +1,1 @@
+processed_data_path = '../data/processed_data'
