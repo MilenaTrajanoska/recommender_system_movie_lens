@@ -1,48 +1,62 @@
-import tensorflow as tf
 import matplotlib.pyplot as plt
 from tensorflow import keras
-import pandas as pd
 import numpy as np
-
+from tensorflow.keras.constraints import non_neg
+from IPython.display import SVG, display
+from tensorflow.keras.utils import model_to_dot
 
 class BaseCFModel:
 
   model = None
 
-  def __init__(self, N_USERS, N_MOVIES, LATENT_FACTORS, metrics=None):
+  def __init__(self, N_USERS, N_MOVIES, LATENT_FACTORS, reg_term=1e-6, tf_idf_matrix=None):
     self.N_USERS = N_USERS
     self.N_MOVIES = N_MOVIES
     self.LATENT_FACTORS = LATENT_FACTORS
+    self.tf_idf_matrix = tf_idf_matrix
+    self.reg_term = reg_term
     self.build()
-
 
   def build(self):
       movie_input = keras.layers.Input(shape=[1], name="MoviesInput")
-      movie_embedding = keras.layers.Embedding(self.N_MOVIES + 1, self.LATENT_FACTORS, name='MoviesEmbedding')(movie_input)
+      movie_embedding = keras.layers.Embedding(self.N_MOVIES,
+                                               self.LATENT_FACTORS,
+                                               name='MoviesEmbedding',
+                                               embeddings_regularizer=keras.regularizers.l2(self.reg_term),
+                                               embeddings_constraint=non_neg())(movie_input)
       movie_vec = keras.layers.Flatten(name='MoviesFlatten')(movie_embedding)
 
       user_input = keras.layers.Input(shape=[1], name='UsersInput')
-      user_embedding = keras.layers.Embedding(self.N_USERS + 1, self.LATENT_FACTORS, name='UsersEmbedding')(user_input)
+      user_embedding = keras.layers.Embedding(self.N_USERS,
+                                              self.LATENT_FACTORS,
+                                              name='UsersEmbedding',
+                                              embeddings_regularizer=keras.regularizers.l2(self.reg_term),
+                                              embeddings_constraint=non_neg())(user_input)
       user_vec = keras.layers.Flatten(name='UsersFlatten')(user_embedding)
 
       product = keras.layers.dot([movie_vec, user_vec], axes=1, name='DotProduct')
       model = keras.Model([user_input, movie_input], product, name='MatrixFactorizationReccomender')
+      model.run_eagerly = True
       self.model = model
 
-
-  def compile(self, loss_function='mean_squared_error'):
-      self.model.compile(optimizer='sgd', loss=loss_function, metrics=['mae', 'mse'])
+  def compile(self, loss_function='mean_squared_error', lr=0.01):
+      opt = keras.optimizers.SGD(learning_rate=lr)
+      self.model.compile(optimizer=opt, loss=loss_function, metrics=['mae', 'mse'])
       print(self.model.summary())
-      tf.keras.utils.plot_model(self.model, to_file='model.png')
+      display(SVG(model_to_dot(self.model,
+                               show_shapes=True,
+                               show_layer_names=True,
+                               rankdir='HB',
+                               dpi=70)
+                  .create(prog='dot', format='svg')))
 
-
-  def train(self, train_data, epochs = 100, batch = 8):
+  def train(self, train_data, epochs=100, batch=8):
       history = self.model.fit([train_data.userId, train_data.movieId],
                                train_data.rating,
                                epochs=epochs,
                                batch_size=batch,
                                validation_split=0.15,
-                               verbose=0)
+                               verbose=1)
 
       plt.plot(history.history['loss'])
       plt.plot(history.history['val_loss'])
@@ -52,11 +66,10 @@ class BaseCFModel:
       plt.legend(['train', 'validation'])
       plt.show()
 
-
-  def get_movies_embeddings(self, index = None):
+  def get_movies_embeddings(self, index=None):
       movie_embeddings = self.model.get_layer(name='MoviesEmbedding').get_weights()[0]
       if index is None:
-          return pd.DataFrame(movie_embeddings)
+          return movie_embeddings
       else:
           return movie_embeddings[index]
 
@@ -67,8 +80,14 @@ class BaseCFModel:
       mids = np.argpartition(movies, -num_movies)[-num_movies:]
       return mids
 
-  def save(self, folder='base'):
-      self.model.save(f'../trained_models/{folder}')
+  def predict(self, data):
+      return self.model.predict([data.userId, data.movieId])
+
+  def evaluate(self, pred, true):
+      return self.model.evaluate(pred, true)
+
+  def save(self, path):
+      self.model.save(path)
 
   def load_model(self, path):
       self.model = keras.models.load_model(path)
